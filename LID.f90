@@ -111,7 +111,7 @@ MODULE LID
       logical :: Sat                  ! saturation flag
    end type TGrnAmpt
 
-   
+
 ! LID Unit - specific LID process applied over a given area
    type :: TLidUnit
       integer :: lidIndex          ! index of LID process
@@ -141,10 +141,61 @@ MODULE LID
       real(kind=8) :: newDrainFlow
    end type TLidUnit
 
-
+   type(TLidUnit) :: theLidUnit
+   type(TLidProc) :: theLidProc
 
 contains
 
+   function getSoilPercRate(theta) result(percRate)
+      real(kind=8), intent(in) :: theta    ! moisture content (fraction)
+      real(kind=8) :: delta                ! moisture deficit
+
+      ! ... no percolation if soil moisture <= field capacity
+      if ( theta <= theLidProc%soil%fieldCap ) then
+         percRate = 0.0
+         return
+      end if
+
+      ! ... perc rate = unsaturated hydraulic conductivity
+      delta = theLidProc%soil%porosity - theta
+      percRate = theLidProc%soil%kSat * exp(-delta * theLidProc%soil%kSlope)
+   end function getSoilPercRate
+
+   function getDrainMatOutflow(depth) result(flowRate)
+      real(kind=8), intent(in) :: depth    ! depth of water in drainage mat (ft)
+      real(kind=8) :: flowRate             ! flow rate in drainage mat (ft/s)
+
+      !... default is to pass all inflow
+      flowRate = SoilPerc
+
+      !... otherwise use Manning eqn. if its parameters were supplied
+      if ( theLidProc%drainMat%alpha > 0.0 ) then
+         flowRate = theLidProc%drainMat%alpha * depth**(5.0/3.0) *
+         theLidUnit%fullWidth / theLidUnit%area *
+         theLidProc%drainMat%voidFrac
+      end if
+
+   end function getDrainMatOutflow
+
+
+   function getSurfaceOutflowRate(depth) result(outflowRate)
+      real(kind=8), intent(in) :: depth       ! depth of ponded water on surface layer (ft)
+      real(kind=8) :: outflowRate              ! outflow rate from surface layer (ft/s)
+      real(kind=8) :: delta                    ! difference between depth and surface layer thickness
+
+      !... no outflow if ponded depth below storage depth
+      delta = depth - theLidProc%surface%thickness
+      if ( delta < 0.0 ) then
+         outflowRate = 0.0
+         return
+      end if
+
+      !... compute outflow from overland flow Manning equation
+      outflowRate = theLidProc%surface%alpha * delta**(5.0/3.0) *
+      theLidUnit%fullWidth / theLidUnit%area
+      outflowRate = MIN(outflowRate, delta / Tstep)
+
+   end function getSurfaceOutflowRate
 
    subroutine greenRoofFluxRates(x, f)
       implicit none
@@ -171,7 +222,20 @@ contains
       real(kind=8) :: storageVoidFrac
       real(kind=8) :: soilFieldCap
       real(kind=8) :: soilWiltPoint
+      real(kind=8) :: StorageVolume
+      real(kind=8) :: SurfaceVolume
 
+      !local data
+      real(kind=8) :: SoilVolume
+      real(kind=8) :: StorageEvap
+      real(kind=8) :: SoilPerc
+      integer :: Tstep
+      real(kind=8) :: StorageExfil
+      real(kind=8) :: StorageDrain
+      real(kind=8) :: SurfaceOutflow
+      real(kind=8) :: SurfaceInfil
+      real(kind=8) :: SurfaceInflow
+      real(kind=8) :: SurfaceEvap
       !... 从输入向量中获取湿度水平
       surfaceDepth = x(SURF)
       soilTheta = x(SOIL)
